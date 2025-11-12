@@ -1,0 +1,5 @@
+# Streamlit secrets 파일은 깃허브에 업로드하지 않음
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.env
