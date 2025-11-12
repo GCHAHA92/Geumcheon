@@ -10,18 +10,18 @@ import re
 
 st.set_page_config(layout="wide", page_title="금천구 감사결과 PDF 파싱 서비스")
 
-# secrets에서 키/URI 불러오기
+# --- Secrets ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 client_db = MongoClient(st.secrets["MONGO_URI"])
 
 db = client_db["json_db"]
 counter_collection = db["Yangsan_Audit"]
 
-# 최신 모델 (빠름/저비용)
-MODEL_NAME = "gemini-2.5-flash"
+# --- Model (필터 완화 조합 권장) ---
+MODEL_NAME = "gemini-2.0-pro-exp"  # 정확도 중심, 필터 완화 체감
 model = genai.GenerativeModel(model_name=MODEL_NAME)
 
-# -------- Pydantic 스키마 --------
+# --- Pydantic Schemas ---
 class AuditResult(BaseModel):
     건명: str
     처분: str
@@ -33,16 +33,14 @@ class ResearchPaperExtraction(BaseModel):
     피감기관: str
     감사결과: List[AuditResult]
 
-# -------- 유틸: PDF 추출 / JSON 보정 / 복구 / 안전 레닥션 --------
+class ChunkExtraction(BaseModel):
+    감사결과: List[AuditResult]
+
+# --- Utils: text, redaction, chunk, json repair ---
 def extract_text_from_doc(file):
-    try:
-        return extract_text(file)
-    except Exception:
-        # 일부 환경에서 모듈 경로 차이 대응
-        return _extract_text(file)
+    return extract_text(file)
 
 def coerce_json_from_text(raw: str) -> str:
-    """코드펜스/잡텍스트 제거하고 최외곽 JSON 블록만 추출"""
     s = (raw or "").strip()
     s = re.sub(r"^```(?:json)?", "", s).strip()
     s = re.sub(r"```$", "", s).strip()
@@ -55,20 +53,19 @@ REDACT_TOKEN = "【비공개】"
 
 def redact_for_safety(text: str) -> str:
     s = text
-    # 이메일, URL
+    # 이메일/URL/전화
     s = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", REDACT_TOKEN, s)
     s = re.sub(r"https?://\S+", REDACT_TOKEN, s)
-    # 전화번호(국내)
-    s = re.sub(r"\b(?:0\d{1,2}-\d{3,4}-\d{4})\b", REDACT_TOKEN, s)
-    s = re.sub(r"\b\d{3}-\d{4}-\d{4}\b", REDACT_TOKEN, s)
-    # 사건/문서번호류
-    s = re.sub(r"(?:\d{4}[^\s]{0,4}\d{3,8})", REDACT_TOKEN, s)
+    s = re.sub(r"\b(?:0\d{1,2}-\d{3,4}-\d{4}|\d{3}-\d{4}-\d{4})\b", REDACT_TOKEN, s)
+    # 사건번호/문서번호류
     s = re.sub(r"\b\d{4}-\d{3,6}\b", REDACT_TOKEN, s)
-    # 큰 숫자(금액 등) 과도 차단 완화용
+    s = re.sub(r"(?:\d{4}[^\s]{0,4}\d{3,8})", REDACT_TOKEN, s)
+    # 큰 숫자(금액/계좌 등) → 숫자 토큰화
     s = re.sub(r"\b\d{7,}\b", REDACT_TOKEN, s)
-    # 사람 이름+직함(보수적 처리)
-    s = re.sub(r"([가-힣]{2,4})\s?(과장|팀장|위원장|위원|계장|주무관)", REDACT_TOKEN, s)
-    # 대괄호식 내부 식별 흔적
+    # 사람 이름+직함, 기관명 패턴(보수적으로)
+    s = re.sub(r"([가-힣]{2,4})\s?(과장|팀장|위원장|위원|계장|주무관|담당)", REDACT_TOKEN, s)
+    s = re.sub(r"서울특별시\s*금천구", "【기관】", s)
+    # 대괄호 내부 식별
     s = re.sub(r"\[[^\]]{1,30}\]", REDACT_TOKEN, s)
     return s
 
@@ -76,17 +73,61 @@ def filter_relevant(text: str) -> str:
     keys = ("시정","주의","기타","회수","추징","추급","환급","징계","훈계","관련규정")
     lines = text.splitlines()
     picked = [ln for ln in lines if any(k in ln for k in keys)]
-    return "\n".join(picked[:4000])
+    # 과도한 표/번호 블록 제거
+    picked = [ln for ln in picked if not re.search(r"\d{2,}/\d{2,}|-{5,}|={5,}", ln)]
+    return "\n".join(picked[:6000])
 
-# Google SDK에서 지원하는 4개 카테고리만 설정 (dict)
+def chunk_text(s: str, size: int = 6000, overlap: int = 300):
+    i, n = 0, len(s)
+    while i < n:
+        yield s[i:i+size]
+        i += size - overlap
+
+# --- Safety enums (버전 호환) ---
+def _cat(*names):
+    for n in names:
+        if hasattr(HarmCategory, n):
+            return getattr(HarmCategory, n)
+    raise AttributeError(f"HarmCategory has none of: {names}")
+
+SEXUAL_CAT = _cat(
+    "HARM_CATEGORY_SEXUALLY_EXPLICIT",  # 일부 버전
+    "HARM_CATEGORY_SEXUAL_CONTENT",     # 다른 버전
+    "HARM_CATEGORY_SEXUAL",             # 드문 구버전
+)
+
 SAFETY_RELAXED = {
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    _cat("HARM_CATEGORY_HATE_SPEECH"):        HarmBlockThreshold.BLOCK_NONE,
+    _cat("HARM_CATEGORY_HARASSMENT"):         HarmBlockThreshold.BLOCK_NONE,
+    SEXUAL_CAT:                                HarmBlockThreshold.BLOCK_NONE,
+    _cat("HARM_CATEGORY_DANGEROUS_CONTENT"):  HarmBlockThreshold.BLOCK_NONE,
 }
 
-# -------- 세션 상태 --------
+# --- Helpers to call model safely ---
+def is_safety_blocked(resp) -> bool:
+    return bool(getattr(resp, "candidates", None)) and resp.candidates[0].finish_reason == 2
+
+def call_with_optional_safety(messages, schema_model):
+    gen_config = genai.GenerationConfig(
+        response_mime_type="application/json",
+        response_schema=schema_model,
+        temperature=0,
+        max_output_tokens=8192,
+    )
+    try:
+        resp = model.generate_content(messages, generation_config=gen_config)
+    except Exception:
+        # 드문 통신 오류 폴백
+        resp = model.generate_content(messages, generation_config=gen_config)
+    if is_safety_blocked(resp):
+        try:
+            resp = model.generate_content(messages, generation_config=gen_config, safety_settings=SAFETY_RELAXED)
+        except Exception:
+            # safety_settings 미지원 버전 폴백
+            resp = model.generate_content(messages, generation_config=gen_config)
+    return resp
+
+# --- Session State ---
 if "structured_json" not in st.session_state:
     st.session_state["structured_json"] = None
 if "extracted_text" not in st.session_state:
@@ -108,7 +149,7 @@ with col1:
 # 우측: 구조화/저장
 with col2:
     if st.session_state.get("extracted_text"):
-        st.subheader("RAG_Parse_PDF")
+        st.subheader("RAG_Parse_PDF (필터완화·조각처리)")
 
         if st.button("AI로 구조화 분석하기"):
             with st.spinner("Structured Outputs..."):
@@ -117,102 +158,76 @@ with col2:
                         "You are an expert at structured data extraction. "
                         "You will be given unstructured text from a research paper and should convert it into the given structure."
                     )
-                    # 입력 레닥션 및 핵심 추출
                     raw_text = st.session_state["extracted_text"]
                     focused = filter_relevant(raw_text)
                     redacted = redact_for_safety(focused)
-                    user_msg = (
-                        f"{redacted} 내용 중 '시정','주의','기타','회수(추징)','추급(환급)','징계','훈계(경고)' 등 "
-                        "처분결과 기준으로 자료를 모두 만들고, 관련규정은 요약하지 말고 모두 입력해 주세요. "
-                        "민감정보(개인명·전화·사건번호·이메일·URL 등)는 절대 포함하지 마세요."
-                    )
 
-                    # 1차 호출
-                    resp = model.generate_content(
-                        [system_msg, user_msg],
-                        generation_config=genai.GenerationConfig(
-                            response_mime_type="application/json",
-                            response_schema=ResearchPaperExtraction,
-                            temperature=0,
-                            max_output_tokens=8192,
-                        ),
-                    )
+                    # 조각 처리
+                    parts = list(chunk_text(redacted, size=6000, overlap=200))
+                    all_items: List[AuditResult] = []
 
-                    def is_safety_blocked(r) -> bool:
-                        return bool(getattr(r, "candidates", None)) and r.candidates[0].finish_reason == 2
-
-                    if is_safety_blocked(resp):
-                        # 2차: 안전성 완화 설정으로 재시도 (동일 입력)
-                        resp = model.generate_content(
-                            [system_msg, user_msg],
-                            generation_config=genai.GenerationConfig(
-                                response_mime_type="application/json",
-                                response_schema=ResearchPaperExtraction,
-                                temperature=0,
-                                max_output_tokens=8192,
-                            ),
-                            safety_settings=SAFETY_RELAXED,
+                    for idx, part in enumerate(parts, start=1):
+                        user_msg = (
+                            f"PART {idx}/{len(parts)}\n\n" +
+                            f"{part}\n\n" +
+                            "위 텍스트에서 '건명','처분','관련규정','지적사항'만 추출하여 JSON으로 반환하세요. "
+                            "상위 키는 '감사결과' 하나만 포함합니다. 처분은 '시정','주의','기타','회수(추징)','추급(환급)','징계','훈계(경고)'만 사용. "
+                            "관련규정은 요약 금지(원문 그대로). 민감정보(개인명·전화·사건번호·이메일·URL)는 절대 포함하지 마세요."
                         )
 
-                    if is_safety_blocked(resp):
-                        st.error("안전성 필터에 의해 응답이 차단되었습니다. 텍스트 범위를 줄이거나 표/개인정보를 제외하고 다시 시도해 주세요.")
-                        if getattr(resp, "prompt_feedback", None):
-                            st.caption(f"prompt_feedback: {resp.prompt_feedback}")
-                        st.stop()
+                        resp = call_with_optional_safety([system_msg, user_msg], ChunkExtraction)
 
-                    # 1차 파싱
-                    try:
-                        structured = ResearchPaperExtraction.model_validate_json(resp.text)
-                    except (ValidationError, json.JSONDecodeError, Exception):
-                        # 2차: 보정(coerce) 후 재파싱
-                        cleaned = coerce_json_from_text(getattr(resp, "text", "") or "")
+                        if is_safety_blocked(resp):
+                            st.warning(f"PART {idx}: 안전성 필터 차단으로 건너뜀")
+                            continue
+
+                        # 파싱
                         try:
-                            data = json.loads(cleaned)
-                        except json.JSONDecodeError:
-                            # 3차: 복구(repair) 재요청 (설명/코드펜스 금지, JSON만)
-                            repair_prompt = f"""
+                            chunk_struct = ChunkExtraction.model_validate_json(resp.text)
+                        except Exception:
+                            cleaned = coerce_json_from_text(getattr(resp, "text", "") or "")
+                            try:
+                                data = json.loads(cleaned)
+                                if "감사결과" not in data:
+                                    data = {"감사결과": []}
+                                chunk_struct = ChunkExtraction(**data)
+                            except json.JSONDecodeError:
+                                # 마지막 복구 요청(해당 파트만)
+                                repair_prompt = f"""
 다음 응답은 JSON 문법 오류가 있습니다. 아래 스키마에 맞게 유효한 JSON만 출력하세요. 설명/코드펜스 금지.
 
 SCHEMA:
-- 감사연도: string
-- 피감기관: string
 - 감사결과: list of objects with fields ["건명","처분","관련규정","지적사항"]
 
 BROKEN:
 {getattr(resp, 'text', '')}
 """
-                            repair = model.generate_content(
-                                [repair_prompt],
-                                generation_config=genai.GenerationConfig(
-                                    response_mime_type="application/json",
-                                    response_schema=ResearchPaperExtraction,
-                                    temperature=0,
-                                    max_output_tokens=4096,
-                                ),
-                                safety_settings=SAFETY_RELAXED,
-                            )
-                            if is_safety_blocked(repair):
-                                st.error("안전성 필터로 인해 JSON 복구가 차단되었습니다. 입력을 더 축약하거나 민감정보를 제거해 주세요.")
-                                st.stop()
-                            structured = ResearchPaperExtraction.model_validate_json(repair.text)
-                        else:
-                            # 상단 키 누락 시 최소 보정
-                            if "감사연도" not in data or "피감기관" not in data:
-                                data = {
-                                    "감사연도": data.get("감사연도", ""),
-                                    "피감기관": data.get("피감기관", ""),
-                                    "감사결과": data.get("감사결과", []),
-                                }
-                            structured = ResearchPaperExtraction(**data)
+                                repair = call_with_optional_safety([repair_prompt], ChunkExtraction)
+                                if is_safety_blocked(repair):
+                                    st.warning(f"PART {idx}: 복구도 차단되어 스킵")
+                                    continue
+                                chunk_struct = ChunkExtraction.model_validate_json(repair.text)
 
-                    st.session_state["structured_json"] = structured
+                        all_items.extend(chunk_struct.감사결과)
+
+                    if not all_items:
+                        st.error("추출된 항목이 없습니다. 텍스트 범위를 줄이거나 민감정보를 더 제거해 다시 시도해 주세요.")
+                        st.stop()
+
+                    # 최종 구조(연도/기관은 비어둘 수 있음)
+                    final_struct = ResearchPaperExtraction(
+                        감사연도="",
+                        피감기관="",
+                        감사결과=all_items,
+                    )
+
+                    st.session_state["structured_json"] = final_struct
 
                     st.write("구조화된 JSON 데이터:")
                     with st.expander("구조화된 JSON 데이터:"):
-                        st.json(structured.model_dump())
+                        st.json(final_struct.model_dump())
 
                 except Exception as e:
-                    # SAFETY 차단 시에는 resp.text가 없을 수 있으므로 접근하지 않음
                     st.error(f"Gemini API 호출 또는 응답 처리 중 오류 발생: {e}")
 
         if st.session_state.get("structured_json") and st.button("MongoDB 저장"):
