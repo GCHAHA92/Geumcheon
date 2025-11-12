@@ -3,6 +3,8 @@ from pymongo import MongoClient
 from pydantic import BaseModel, ValidationError
 from typing import List
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from pdfminer_high_level import extract_text as _extract_text  # fallback alias if needed
 from pdfminer.high_level import extract_text
 import json
 import re
@@ -34,7 +36,11 @@ class ResearchPaperExtraction(BaseModel):
 
 # -------- 유틸: PDF 추출 / JSON 보정 / 복구 / 안전 레닥션 --------
 def extract_text_from_doc(file):
-    return extract_text(file)
+    try:
+        return extract_text(file)
+    except Exception:
+        # 일부 환경에서 모듈 경로 차이 대응
+        return _extract_text(file)
 
 def coerce_json_from_text(raw: str) -> str:
     """코드펜스/잡텍스트 제거하고 최외곽 JSON 블록만 추출"""
@@ -73,18 +79,13 @@ def filter_relevant(text: str) -> str:
     picked = [ln for ln in lines if any(k in ln for k in keys)]
     return "\n".join(picked[:4000])
 
-SAFETY_RELAXED = [
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_SEXUAL",            "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_VIOLENCE",          "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY",   "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_DRUGS",             "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HEALTH",            "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_SELF_HARM",         "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_FINANCE",           "threshold": "BLOCK_NONE"},
-]
+# Google SDK에서 지원하는 4개 카테고리만 설정 (dict)
+SAFETY_RELAXED = {
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUAL: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
 
 # -------- 세션 상태 --------
 if "structured_json" not in st.session_state:
@@ -117,7 +118,7 @@ with col2:
                         "You are an expert at structured data extraction. "
                         "You will be given unstructured text from a research paper and should convert it into the given structure."
                     )
-                    # 입력을 레닥션 후 사용
+                    # 입력 레닥션 및 핵심 추출
                     raw_text = st.session_state["extracted_text"]
                     focused = filter_relevant(raw_text)
                     redacted = redact_for_safety(focused)
