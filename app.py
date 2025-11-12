@@ -18,7 +18,7 @@ db = client_db["json_db"]
 counter_collection = db["Yangsan_Audit"]
 
 # --- Model (무료 티어/안정) ---
-MODEL_NAME = "gemini-2.5-pro"  # 무료 티어/속도 우선, 스키마 강제 지원
+MODEL_NAME = "gemini-2.5-flash-lite"  # 무료 티어/속도 우선, 스키마 강제 지원
 model = genai.GenerativeModel(model_name=MODEL_NAME)
 
 # --- Pydantic Schemas ---
