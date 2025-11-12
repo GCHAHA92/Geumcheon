@@ -5,11 +5,16 @@ import google.generativeai as genai
 from pdfminer.high_level import extract_text
 import json
 
+# Python 3.8+ 표준
+try:
+    from importlib.metadata import version, PackageNotFoundError
+except ImportError:  # 아주 구버전 대비 (백포트)
+    from importlib_metadata import version, PackageNotFoundError  # pip install importlib-metadata
 
-import pkg_resources, streamlit as st
-st.write("google-generativeai version:",
-         pkg_resources.get_distribution("google-generativeai").version)
-
+try:
+    st.write("google-generativeai version:", version("google-generativeai"))
+except PackageNotFoundError:
+    st.error("google-generativeai 미설치. requirements.txt에 'google-generativeai>=0.8.0' 추가 후 Reboot 해주세요.")
 
 st.set_page_config(layout="wide", page_title="테스트")
 
