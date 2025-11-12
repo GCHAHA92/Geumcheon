@@ -99,7 +99,7 @@ with col1:
         st.session_state["extracted_text"] = extracted_text
 
         st.subheader("📄 PDF 원문 미리보기")
-        st.text_area("추출된 텍스트", extracted_text[:8000], height=400)
+        st.text_area("추출된 텍스트", extracted_text[:800000], height=400)
 
 # ----------- (2) AI 분석 -----------
 with col2:
