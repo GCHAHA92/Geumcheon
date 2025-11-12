@@ -18,7 +18,7 @@ db = client_db["json_db"]
 counter_collection = db["Yangsan_Audit"]
 
 # --- Model (필터 완화 조합 권장) ---
-MODEL_NAME = "gemini-2.0-pro-exp"  # 정확도 중심, 필터 완화 체감
+MODEL_NAME = "gemini-2.5-flash"  # 정확도 중심, 필터 완화 체감
 model = genai.GenerativeModel(model_name=MODEL_NAME)
 
 # --- Pydantic Schemas ---
