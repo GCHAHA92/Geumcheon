@@ -1,5 +1,5 @@
 streamlit
 pymongo
 pydantic
-google-generativeai>=0.8.0
 pdfminer.six
+google-generativeai>=0.8.0
