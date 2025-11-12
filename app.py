@@ -5,6 +5,7 @@ from typing import List
 import google.generativeai as genai
 from pdfminer.high_level import extract_text
 import json
+import re
 
 st.set_page_config(layout="wide", page_title="금천구 감사결과 PDF 파싱 서비스")
 
@@ -19,9 +20,6 @@ counter_collection = db["Yangsan_Audit"]
 MODEL_NAME = "gemini-2.5-flash"
 model = genai.GenerativeModel(model_name=MODEL_NAME)
 
-def extract_text_from_doc(file):
-    return extract_text(file)
-
 # ---- Pydantic 스키마 ----
 class AuditResult(BaseModel):
     건명: str
@@ -33,6 +31,20 @@ class ResearchPaperExtraction(BaseModel):
     감사연도: str
     피감기관: str
     감사결과: List[AuditResult]
+
+# ---- 유틸: PDF 추출/JSON 보정/복구 ----
+def extract_text_from_doc(file):
+    return extract_text(file)
+
+def coerce_json_from_text(raw: str) -> str:
+    """코드펜스/잡텍스트 제거하고 최외곽 JSON 블록만 추출"""
+    s = (raw or "").strip()
+    # 코드펜스 제거
+    s = re.sub(r"^```(?:json)?", "", s).strip()
+    s = re.sub(r"```$", "", s).strip()
+    # 최외곽 {...} 추출
+    start, end = s.find("{"), s.rfind("}")
+    return s[start:end+1] if start != -1 and end != -1 and end > start else s
 
 # ---- 세션 상태 ----
 if "structured_json" not in st.session_state:
@@ -58,7 +70,7 @@ with col2:
     if st.session_state.get("extracted_text"):
         st.subheader("RAG_Parse_PDF")
 
-        # OpenAI의 response_format과 유사: schema + JSON 강제
+        # OpenAI response_format과 유사: schema + JSON 강제
         system_msg = (
             "You are an expert at structured data extraction. "
             "You will be given unstructured text from a research paper and should convert it into the given structure."
@@ -72,20 +84,64 @@ with col2:
         if st.button("AI로 구조화 분석하기"):
             with st.spinner("Structured Outputs..."):
                 try:
+                    # 1차: JSON만 + 스키마 강제
                     resp = model.generate_content(
                         [system_msg, user_msg],
                         generation_config=genai.GenerationConfig(
                             response_mime_type="application/json",
-                            response_schema=ResearchPaperExtraction,  # ← Pydantic 스키마 그대로!
+                            response_schema=ResearchPaperExtraction,
                             temperature=0,
+                            max_output_tokens=8192,
                         ),
                     )
-                    # Gemini는 위 설정이면 JSON만 반환
-                    structured = ResearchPaperExtraction.model_validate_json(resp.text)
+
+                    try:
+                        structured = ResearchPaperExtraction.model_validate_json(resp.text)
+                    except Exception:
+                        # 2차: 보정(coerce) → 파싱 재시도
+                        cleaned = coerce_json_from_text(getattr(resp, "text", ""))
+                        try:
+                            data = json.loads(cleaned)
+                        except json.JSONDecodeError:
+                            # 3차: 복구(repair) 재요청 (설명 금지, JSON만)
+                            repair = model.generate_content(
+                                [
+                                    f"""
+다음 응답은 JSON 문법 오류가 있습니다. 아래 스키마에 맞게
+**유효한 JSON만** 출력하세요. 설명/코드펜스 금지.
+
+SCHEMA:
+- 감사연도: string
+- 피감기관: string
+- 감사결과: list of objects with fields ["건명","처분","관련규정","지적사항"]
+
+BROKEN:
+{resp.text}
+"""
+                                ],
+                                generation_config=genai.GenerationConfig(
+                                    response_mime_type="application/json",
+                                    response_schema=ResearchPaperExtraction,
+                                    temperature=0,
+                                    max_output_tokens=4096,
+                                ),
+                            )
+                            structured = ResearchPaperExtraction.model_validate_json(repair.text)
+                        else:
+                            # 상단 키 누락시 최소 보정
+                            if "감사연도" not in data or "피감기관" not in data:
+                                data = {
+                                    "감사연도": data.get("감사연도", ""),
+                                    "피감기관": data.get("피감기관", ""),
+                                    "감사결과": data.get("감사결과", []),
+                                }
+                            structured = ResearchPaperExtraction(**data)
+
                     st.session_state["structured_json"] = structured
 
                     st.write("구조화된 JSON 데이터:")
                     with st.expander("구조화된 JSON 데이터:"):
+                        # Pydantic v2
                         st.json(structured.model_dump())
 
                 except Exception as e:
