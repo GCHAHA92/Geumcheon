@@ -6,6 +6,7 @@ from pdfminer.high_level import extract_text
 import json
 import io
 import traceback
+import re
 
 # -----------------------------
 # 기본 설정
@@ -86,29 +87,42 @@ def pydantic_to_dict(model_obj):
             return model_obj.dict()
         return json.loads(model_obj.json())
     except Exception:
-        # 어떻게든 직렬화
         return json.loads(json.dumps(model_obj, default=lambda o: getattr(o, "__dict__", str(o))))
 
 # -----------------------------
-# PDF 텍스트 추출
+# PDF 텍스트 추출 및 전처리 (표 제거 포함)
 # -----------------------------
+BULLET_RE = re.compile(r"^\s*[•·◦▪●■□◆▶▷★☆※\-*]+\s*")
+DATE_RE = r"\d{4}-\d{2}-\d{2}"
+
+def remove_tables(s: str) -> str:
+    s = re.sub(r"\[표\][\s\S]*?(?=(\n{2,}|건명:|처분:|관련규정:|지적사항:|조치할\s*사항))", "\n", s)
+    cleaned = []
+    for ln in s.splitlines():
+        score = 0
+        score += len(re.findall(DATE_RE, ln))
+        score += len(re.findall(r"\b\d{1,3}(?:,\d{3})*\b", ln))
+        score += len(re.findall(r"\b\d+\b", ln))
+        if score >= 4 and len(re.findall(r"[ \t]{2,}", ln)) >= 1:
+            continue
+        cleaned.append(ln)
+    return "\n".join(cleaned)
+
 def extract_text_from_doc(file_like):
-    # Streamlit은 UploadedFile(바이너리) → pdfminer는 file-like 지원
-    # 업로드 객체를 BytesIO로 감싸 안정적 처리
     if hasattr(file_like, "read"):
         data = file_like.read()
         file_like.seek(0)
         bio = io.BytesIO(data)
-        return extract_text(bio)
-    # 이미 경로나 바이너리라면 그대로 시도
-    return extract_text(file_like)
+        text = extract_text(bio)
+    else:
+        text = extract_text(file_like)
+    return remove_tables(text)
 
 # -----------------------------
 # 레이아웃
 # -----------------------------
 col1, col2 = st.columns(2)
 
-# ----------- 업로드 & 미리보기 -----------
 with col1:
     uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type="pdf")
 
@@ -122,14 +136,12 @@ with col1:
             st.error(f"PDF 텍스트 추출 중 오류: {e}")
             st.caption(traceback.format_exc())
 
-# ----------- 파싱 & Mongo 저장 -----------
 with col2:
     if uploaded_file is not None and st.session_state.get("extracted_text"):
         st.subheader("RAG_Parse_PDF")
         if st.button("AI로 구조화 파싱 실행"):
             with st.spinner("Structured Outputs..."):
                 try:
-                    # OpenAI Structured Outputs (Pydantic) 사용
                     completion = client.beta.chat.completions.parse(
                         model="gpt-4o-mini",
                         messages=[
@@ -169,7 +181,6 @@ with col2:
                 with st.spinner("MongoDB Save..."):
                     try:
                         doc = pydantic_to_dict(st.session_state["structured_json"])
-                        # 기본 보정: 필수 키 유효성 체크
                         for k in ["감사연도", "피감기관", "감사결과"]:
                             if k not in doc:
                                 raise ValueError(f"'{k}' 필드가 없습니다.")
@@ -178,7 +189,6 @@ with col2:
                     except Exception as e:
                         st.error(f"데이터 저장 중 오류 발생: {e}")
                         st.caption(traceback.format_exc())
-
     else:
         st.markdown(
             """
@@ -213,7 +223,6 @@ if search_query:
                         {"처분": {"$regex": search_query, "$options": "i"}},
                         {"관련규정": {"$regex": search_query, "$options": "i"}},
                         {"지적사항": {"$regex": search_query, "$options": "i"}},
-                        # 사용하신 스키마에 '규정주요내용'이 없다면 자동으로 건너뜁니다.
                         {"규정주요내용": {"$regex": search_query, "$options": "i"}},
                     ]
                 }
