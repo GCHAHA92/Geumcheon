@@ -5,6 +5,12 @@ import google.generativeai as genai
 from pdfminer.high_level import extract_text
 import json
 
+
+import pkg_resources, streamlit as st
+st.write("google-generativeai version:",
+         pkg_resources.get_distribution("google-generativeai").version)
+
+
 st.set_page_config(layout="wide", page_title="테스트")
 
 # 🔐 secrets.toml에서 키/URI 불러오기 (하드코딩 금지)
