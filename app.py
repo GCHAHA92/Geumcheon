@@ -4,8 +4,7 @@ from pydantic import BaseModel, ValidationError
 from typing import List
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-from pdfminer_high_level import extract_text as _extract_text  # fallback alias if needed
-from pdfminer.high_level import extract_text
+from pdfminer_high_level import extract_text
 import json
 import re
 
