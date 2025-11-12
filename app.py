@@ -15,7 +15,7 @@ db = client_db['json_db']
 counter_collection = db['Yangsan_Audit']
 
 # ✅ 최신 모델명으로 1회만 생성 (flash가 빠르고 무료 티어 넉넉)
-model = genai.GenerativeModel(model_name="gemini-1.5-flash-latest")
+model = genai.GenerativeModel(model_name="gemini-1.0-pro-latest")
 
 def extract_text_from_doc(file):
     return extract_text(file)
