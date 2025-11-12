@@ -10,7 +10,7 @@ import traceback
 # -----------------------------
 # 기본 설정
 # -----------------------------
-st.set_page_config(layout="wide", page_title="양산시 인공지능 자동화 서비스")
+st.set_page_config(layout="wide", page_title="인공지능 자동화 서비스")
 st.title("감사결과 PDF 파일 파싱 서비스")
 
 # -----------------------------
