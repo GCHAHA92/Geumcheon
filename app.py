@@ -117,7 +117,7 @@ with col1:
             extracted_text = extract_text_from_doc(uploaded_file)
             st.session_state["extracted_text"] = extracted_text
             with st.expander("PDF에서 추출된 텍스트 확인하기", expanded=False):
-                st.write(st.session_state["extracted_text"][:5000] + ("..." if len(st.session_state["extracted_text"]) > 5000 else ""))
+                st.write(st.session_state["extracted_text"][:105000] + ("..." if len(st.session_state["extracted_text"]) > 105000 else ""))
         except Exception as e:
             st.error(f"PDF 텍스트 추출 중 오류: {e}")
             st.caption(traceback.format_exc())
