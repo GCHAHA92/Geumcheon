@@ -5,53 +5,31 @@ from openai import OpenAI
 from pdfminer.high_level import extract_text
 import json
 import io
-import traceback
 import re
 
 # -----------------------------
 # 기본 설정
 # -----------------------------
-st.set_page_config(layout="wide", page_title="인공지능 자동화 서비스")
-st.title("감사결과 PDF 파일 파싱 서비스")
+st.set_page_config(layout="wide", page_title="감사결과 PDF 파일 파싱 서비스")
+st.title("감사결과 PDF 자동 구조화 시스템")
 
 # -----------------------------
-# 시크릿 로딩 (필수 값 점검)
+# 시크릿 로딩
 # -----------------------------
-def load_secrets():
-    openai_key = st.secrets.get("OPENAI_API_KEY")
-    mongo_uri = st.secrets.get("MONGO_URI")
-    missing = []
-    if not openai_key:
-        missing.append("OPENAI_API_KEY")
-    if not mongo_uri:
-        missing.append("MONGO_URI")
-    return openai_key, mongo_uri, missing
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
+MONGO_URI = st.secrets.get("MONGO_URI")
 
-OPENAI_API_KEY, MONGO_URI, MISSING = load_secrets()
-
-if MISSING:
-    st.error(
-        "다음 시크릿 항목이 누락되어 있어요: " + ", ".join(MISSING) +
-        "\n\n`.streamlit/secrets.toml` 파일을 확인해 주세요."
-    )
+if not OPENAI_API_KEY or not MONGO_URI:
+    st.error("OPENAI_API_KEY 또는 MONGO_URI가 설정되지 않았습니다. .streamlit/secrets.toml을 확인하세요.")
     st.stop()
 
 # -----------------------------
-# 외부 클라이언트 초기화
+# 클라이언트 설정
 # -----------------------------
-try:
-    client = OpenAI(api_key=OPENAI_API_KEY)
-except Exception as e:
-    st.error(f"OpenAI 클라이언트 초기화 실패: {e}")
-    st.stop()
-
-try:
-    client_db = MongoClient(MONGO_URI)
-    db = client_db["json_db"]
-    counter_collection = db["Yangsan_Audit"]
-except Exception as e:
-    st.error(f"MongoDB 연결 실패: {e}")
-    st.stop()
+client = OpenAI(api_key=OPENAI_API_KEY)
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client["json_db"]
+collection = db["Yangsan_Audit"]
 
 # -----------------------------
 # Pydantic 모델
@@ -68,79 +46,68 @@ class ResearchPaperExtraction(BaseModel):
     감사결과: list[AuditResult]
 
 # -----------------------------
-# 세션 상태
+# PDF 텍스트 추출 함수
 # -----------------------------
-if "structured_json" not in st.session_state:
-    st.session_state["structured_json"] = None
-
-if "extracted_text" not in st.session_state:
-    st.session_state["extracted_text"] = None
-
-# -----------------------------
-# 유틸: Pydantic → dict (v1/v2 호환)
-# -----------------------------
-def pydantic_to_dict(model_obj):
-    try:
-        if hasattr(model_obj, "model_dump"):
-            return model_obj.model_dump()
-        if hasattr(model_obj, "dict"):
-            return model_obj.dict()
-        return json.loads(model_obj.json())
-    except Exception:
-        return json.loads(json.dumps(model_obj, default=lambda o: getattr(o, "__dict__", str(o))))
+def extract_text_from_pdf(file):
+    if hasattr(file, "read"):
+        data = file.read()
+        file.seek(0)
+        return extract_text(io.BytesIO(data))
+    return extract_text(file)
 
 # -----------------------------
-# PDF 텍스트 추출 및 전처리 (표 제거 포함)
+# 텍스트 정제 함수 (표·연번 제거)
 # -----------------------------
-BULLET_RE = re.compile(r"^\s*[•·◦▪●■□◆▶▷★☆※\-*]+\s*")
-DATE_RE = r"\d{4}-\d{2}-\d{2}"
-
-def remove_tables(s: str) -> str:
-    s = re.sub(r"\[표\][\s\S]*?(?=(\n{2,}|건명:|처분:|관련규정:|지적사항:|조치할\s*사항))", "\n", s)
+def clean_text_for_ai(text: str) -> str:
+    lines = text.splitlines()
     cleaned = []
-    for ln in s.splitlines():
-        score = 0
-        score += len(re.findall(DATE_RE, ln))
-        score += len(re.findall(r"\b\d{1,3}(?:,\d{3})*\b", ln))
-        score += len(re.findall(r"\b\d+\b", ln))
-        if score >= 4 and len(re.findall(r"[ \t]{2,}", ln)) >= 1:
+
+    for line in lines:
+        # 표 구조나 구분선 제거
+        if re.search(r"[│┃┏┓┗┛━═\-]{3,}", line):  # 긴 구분선
             continue
-        cleaned.append(ln)
+        if re.search(r"^\s*\d{1,2}\s*[.|)]", line):  # 연번 (1. / 2) / 3)
+            continue
+        if "표 " in line or "표-" in line or "table" in line.lower():
+            continue
+        if len(line.strip()) == 0:
+            continue
+
+        # 금액이나 총건수는 유지 (예: 27,000원 / 총 14건)
+        cleaned.append(line)
+
     return "\n".join(cleaned)
 
-def extract_text_from_doc(file_like):
-    if hasattr(file_like, "read"):
-        data = file_like.read()
-        file_like.seek(0)
-        bio = io.BytesIO(data)
-        text = extract_text(bio)
-    else:
-        text = extract_text(file_like)
-    return remove_tables(text)
+# -----------------------------
+# 세션 상태
+# -----------------------------
+if "extracted_text" not in st.session_state:
+    st.session_state["extracted_text"] = None
+if "structured_json" not in st.session_state:
+    st.session_state["structured_json"] = None
 
 # -----------------------------
 # 레이아웃
 # -----------------------------
 col1, col2 = st.columns(2)
 
+# ----------- (1) 파일 업로드 -----------
 with col1:
     uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type="pdf")
+    if uploaded_file:
+        extracted_text = extract_text_from_pdf(uploaded_file)
+        st.session_state["extracted_text"] = extracted_text
 
-    if uploaded_file is not None:
-        try:
-            extracted_text = extract_text_from_doc(uploaded_file)
-            st.session_state["extracted_text"] = extracted_text
-            with st.expander("PDF에서 추출된 텍스트 확인하기", expanded=False):
-                st.write(st.session_state["extracted_text"][:105000] + ("..." if len(st.session_state["extracted_text"]) > 105000 else ""))
-        except Exception as e:
-            st.error(f"PDF 텍스트 추출 중 오류: {e}")
-            st.caption(traceback.format_exc())
+        st.subheader("📄 PDF 원문 미리보기")
+        st.text_area("추출된 텍스트", extracted_text[:8000], height=400)
 
+# ----------- (2) AI 분석 -----------
 with col2:
-    if uploaded_file is not None and st.session_state.get("extracted_text"):
-        st.subheader("RAG_Parse_PDF")
-        if st.button("AI로 구조화 파싱 실행"):
-            with st.spinner("Structured Outputs..."):
+    if st.session_state.get("extracted_text"):
+        cleaned_text = clean_text_for_ai(st.session_state["extracted_text"])
+
+        if st.button("AI로 구조화(JSON) 변환"):
+            with st.spinner("AI가 문서를 분석 중입니다..."):
                 try:
                     completion = client.beta.chat.completions.parse(
                         model="gpt-4o-mini",
@@ -148,17 +115,22 @@ with col2:
                             {
                                 "role": "system",
                                 "content": (
-                                    "You are an expert at structured data extraction. "
-                                    "You will be given unstructured text from an audit report "
-                                    "and should convert it into the given structure."
+                                    "You are an expert in audit report parsing. "
+                                    "You must convert unstructured text into structured JSON according to the schema."
                                 ),
                             },
                             {
                                 "role": "user",
                                 "content": (
-                                    f"{st.session_state['extracted_text']}\n\n"
-                                    "내용 중 '시정','주의','기타','회수(추징)','추급(환급)','징계','훈계(경고)' 처분결과 기준으로 "
-                                    "자료를 모두 만들고, 관련규정은 요약하지 말고 모두 입력해 주세요."
+                                    f"{cleaned_text}\n\n"
+                                    "다음 조건을 지켜 감사결과를 JSON으로 구조화하세요:\n"
+                                    "- '시정','주의','기타','회수(환수)','추급(환급)','징계','훈계(경징계/중징계)' 처분결과를 모두 포함합니다.\n"
+                                    "- 표, 연번, 목록형 데이터(1. 2. 3. …)는 제거합니다.\n"
+                                    "- 금액(예: 27,000원), 총 건수(예: 총 14건)는 유지합니다.\n"
+                                    "- 관련규정은 요약하지 말고 법령 원문 전체를 그대로 포함합니다.\n"
+                                    "- 조치할 사항은 반드시 포함합니다.\n"
+                                    "- JSON 형식은 다음과 같습니다:\n"
+                                    "{ '감사연도': str, '피감기관': str, '감사결과': [ {'건명': str, '처분': str, '관련규정': str, '지적사항': str} ] }"
                                 ),
                             },
                         ],
@@ -166,99 +138,47 @@ with col2:
                         temperature=0,
                     )
 
-                    structured_response = completion.choices[0].message.parsed
-                    st.session_state["structured_json"] = structured_response
+                    structured = completion.choices[0].message.parsed
+                    st.session_state["structured_json"] = structured
 
-                    with st.expander("구조화된 JSON 데이터 보기", expanded=True):
-                        st.json(pydantic_to_dict(structured_response))
+                    st.success("✅ AI 구조화 완료!")
+                    st.json(structured.model_dump())
 
                 except Exception as e:
-                    st.error(f"파싱 중 오류: {e}")
-                    st.caption(traceback.format_exc())
+                    st.error(f"AI 처리 중 오류 발생: {e}")
 
-        if st.session_state.get("structured_json") is not None:
+        if st.session_state.get("structured_json"):
             if st.button("MongoDB 저장"):
-                with st.spinner("MongoDB Save..."):
-                    try:
-                        doc = pydantic_to_dict(st.session_state["structured_json"])
-                        for k in ["감사연도", "피감기관", "감사결과"]:
-                            if k not in doc:
-                                raise ValueError(f"'{k}' 필드가 없습니다.")
-                        counter_collection.insert_one(doc)
-                        st.success("MongoDB에 데이터 저장 완료!")
-                    except Exception as e:
-                        st.error(f"데이터 저장 중 오류 발생: {e}")
-                        st.caption(traceback.format_exc())
-    else:
-        st.markdown(
-            """
-**본 서비스는 문서 기반 RAG(Retrieval-Augmented Generation) 시스템 개발을 지원하기 위해 설계되었습니다.**
+                doc = st.session_state["structured_json"].model_dump()
+                collection.insert_one(doc)
+                st.success("✅ MongoDB에 저장 완료!")
 
-1. **공개된 감사결과 PDF의 텍스트를 추출합니다.**  
-   - 업로드한 PDF에서 텍스트를 안정적으로 추출합니다.  
-
-2. **추출된 텍스트를 인공지능으로 구조화(JSON)합니다.**  
-   - 감사결과의 ‘시정, 주의, 기타, 회수(추징), 추급(환급), 징계, 훈계(경고)’ 등 처분 기준으로 파싱합니다.  
-   - 관련 규정은 **요약 없이 원문 전체**를 담습니다.
-
-3. **구조화된 결과를 MongoDB에 저장하고 검색합니다.**
-            """
-        )
-
+# ----------- (3) 검색 -----------
 st.markdown("---")
-
-# -----------------------------
-# 검색 UI (MongoDB)
-# -----------------------------
 st.subheader("MongoDB 검색")
-search_query = st.text_input("검색할 단어 또는 문장을 입력하세요:")
 
+search_query = st.text_input("검색어를 입력하세요:")
 if search_query:
-    try:
-        query = {
-            "감사결과": {
-                "$elemMatch": {
-                    "$or": [
-                        {"건명": {"$regex": search_query, "$options": "i"}},
-                        {"처분": {"$regex": search_query, "$options": "i"}},
-                        {"관련규정": {"$regex": search_query, "$options": "i"}},
-                        {"지적사항": {"$regex": search_query, "$options": "i"}},
-                        {"규정주요내용": {"$regex": search_query, "$options": "i"}},
-                    ]
-                }
+    query = {
+        "감사결과": {
+            "$elemMatch": {
+                "$or": [
+                    {"건명": {"$regex": search_query, "$options": "i"}},
+                    {"처분": {"$regex": search_query, "$options": "i"}},
+                    {"관련규정": {"$regex": search_query, "$options": "i"}},
+                    {"지적사항": {"$regex": search_query, "$options": "i"}},
+                ]
             }
         }
+    }
 
-        results = counter_collection.find(query).limit(100)
-        result_list = list(results)
-
-        if result_list:
-            for idx, doc in enumerate(result_list, start=1):
-                st.markdown(f"### 결과 {idx}")
-                st.write(f"**감사연도:** {doc.get('감사연도', '')}")
-                st.write(f"**피감기관:** {doc.get('피감기관', '')}")
-                audits = doc.get("감사결과", [])
-                if not audits:
-                    st.caption("감사결과 항목이 없습니다.")
-                else:
-                    for audit in audits:
-                        text_bucket = " ".join([
-                            str(audit.get("건명", "")),
-                            str(audit.get("처분", "")),
-                            str(audit.get("관련규정", "")),
-                            str(audit.get("지적사항", "")),
-                            str(audit.get("규정주요내용", "")),
-                        ]).lower()
-                        if search_query.lower() in text_bucket:
-                            st.write(f"- **건명:** {audit.get('건명', '')}")
-                            st.write(f"  **처분:** {audit.get('처분', '')}")
-                            st.write(f"  **관련규정:** {audit.get('관련규정', '')}")
-                            st.write(f"  **지적사항:** {audit.get('지적사항', '')}")
-                            st.markdown("---")
-        else:
-            st.info("검색 결과가 없습니다.")
-    except Exception as e:
-        st.error(f"검색 중 오류 발생: {e}")
-        st.caption(traceback.format_exc())
-else:
-    st.caption("검색어를 입력하면 MongoDB에서 관련 결과를 찾아 보여드립니다.")
+    results = list(collection.find(query))
+    if results:
+        st.success(f"총 {len(results)}건의 결과가 검색되었습니다.")
+        for idx, doc in enumerate(results, start=1):
+            st.markdown(f"### {idx}. {doc.get('피감기관')} ({doc.get('감사연도')})")
+            for r in doc.get("감사결과", []):
+                st.markdown(f"**건명:** {r.get('건명')}  \n**처분:** {r.get('처분')}  \n**관련규정:** {r.get('관련규정')}  \n**지적사항:** {r.get('지적사항')}")
+                st.markdown("---")
+    else:
+        st.info("검색 결과가 없습니다.")
