@@ -17,10 +17,10 @@ client_db = MongoClient(st.secrets["MONGO_URI"])
 
 db = client_db['json_db']
 counter_collection = db['Yangsan_Audit']
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-2.5-pro')
 
 # Gemini 모델 초기화
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-2.5-pro')
 
 def extract_text_from_doc(file):
     text = extract_text(file)
