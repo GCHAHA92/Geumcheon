@@ -9,18 +9,18 @@ import re
 
 st.set_page_config(layout="wide", page_title="금천구 감사결과 PDF 파싱 서비스")
 
-# 🔐 secrets.toml에서 키/URI 불러오기
+# secrets에서 키/URI 불러오기
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 client_db = MongoClient(st.secrets["MONGO_URI"])
 
 db = client_db["json_db"]
 counter_collection = db["Yangsan_Audit"]
 
-# ✅ 최신 모델로 교체 (flash=빠름/저비용, pro=정밀)
+# 최신 모델 (빠름/저비용)
 MODEL_NAME = "gemini-2.5-flash"
 model = genai.GenerativeModel(model_name=MODEL_NAME)
 
-# ---- Pydantic 스키마 ----
+# -------- Pydantic 스키마 --------
 class AuditResult(BaseModel):
     건명: str
     처분: str
@@ -32,7 +32,7 @@ class ResearchPaperExtraction(BaseModel):
     피감기관: str
     감사결과: List[AuditResult]
 
-# ---- 유틸: PDF 추출/JSON 보정/복구 ----
+# -------- 유틸: PDF 추출 / JSON 보정 / 복구 --------
 def extract_text_from_doc(file):
     return extract_text(file)
 
@@ -44,9 +44,11 @@ def coerce_json_from_text(raw: str) -> str:
     s = re.sub(r"```$", "", s).strip()
     # 최외곽 {...} 추출
     start, end = s.find("{"), s.rfind("}")
-    return s[start:end+1] if start != -1 and end != -1 and end > start else s
+    if start != -1 and end != -1 and end > start:
+        return s[start:end + 1]
+    return s
 
-# ---- 세션 상태 ----
+# -------- 세션 상태 --------
 if "structured_json" not in st.session_state:
     st.session_state["structured_json"] = None
 if "extracted_text" not in st.session_state:
@@ -56,7 +58,7 @@ st.title("금천구 감사결과 PDF 파일 파싱 서비스")
 
 col1, col2 = st.columns(2)
 
-# -------- 좌측: 업로드 --------
+# 좌측: 업로드
 with col1:
     uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type="pdf")
     if uploaded_file is not None:
@@ -65,12 +67,11 @@ with col1:
         with st.expander("PDF에서 추출된 텍스트 확인하기"):
             st.write(st.session_state["extracted_text"])
 
-# -------- 우측: 구조화/저장 --------
+# 우측: 구조화/저장
 with col2:
     if st.session_state.get("extracted_text"):
         st.subheader("RAG_Parse_PDF")
 
-        # OpenAI response_format과 유사: schema + JSON 강제
         system_msg = (
             "You are an expert at structured data extraction. "
             "You will be given unstructured text from a research paper and should convert it into the given structure."
@@ -84,7 +85,7 @@ with col2:
         if st.button("AI로 구조화 분석하기"):
             with st.spinner("Structured Outputs..."):
                 try:
-                    # 1차: JSON만 + 스키마 강제
+                    # 1차: JSON 강제 + 스키마 강제
                     resp = model.generate_content(
                         [system_msg, user_msg],
                         generation_config=genai.GenerationConfig(
@@ -95,20 +96,18 @@ with col2:
                         ),
                     )
 
+                    # 1차 파싱 시도
                     try:
                         structured = ResearchPaperExtraction.model_validate_json(resp.text)
                     except Exception:
-                        # 2차: 보정(coerce) → 파싱 재시도
+                        # 2차: 보정(coerce) 후 재파싱
                         cleaned = coerce_json_from_text(getattr(resp, "text", ""))
                         try:
                             data = json.loads(cleaned)
                         except json.JSONDecodeError:
-                            # 3차: 복구(repair) 재요청 (설명 금지, JSON만)
-                            repair = model.generate_content(
-                                [
-                                    f"""
-다음 응답은 JSON 문법 오류가 있습니다. 아래 스키마에 맞게
-**유효한 JSON만** 출력하세요. 설명/코드펜스 금지.
+                            # 3차: 복구(repair) 재요청 (설명/코드펜스 금지, JSON만)
+                            repair_prompt = f"""
+다음 응답은 JSON 문법 오류가 있습니다. 아래 스키마에 맞게 유효한 JSON만 출력하세요. 설명/코드펜스 금지.
 
 SCHEMA:
 - 감사연도: string
@@ -118,7 +117,8 @@ SCHEMA:
 BROKEN:
 {resp.text}
 """
-                                ],
+                            repair = model.generate_content(
+                                [repair_prompt],
                                 generation_config=genai.GenerationConfig(
                                     response_mime_type="application/json",
                                     response_schema=ResearchPaperExtraction,
@@ -128,7 +128,7 @@ BROKEN:
                             )
                             structured = ResearchPaperExtraction.model_validate_json(repair.text)
                         else:
-                            # 상단 키 누락시 최소 보정
+                            # 상단 필드 누락 시 최소 보정
                             if "감사연도" not in data or "피감기관" not in data:
                                 data = {
                                     "감사연도": data.get("감사연도", ""),
@@ -141,7 +141,6 @@ BROKEN:
 
                     st.write("구조화된 JSON 데이터:")
                     with st.expander("구조화된 JSON 데이터:"):
-                        # Pydantic v2
                         st.json(structured.model_dump())
 
                 except Exception as e:
@@ -169,7 +168,7 @@ BROKEN:
 
 st.markdown("---")
 
-# -------- 검색 --------
+# 검색
 search_query = st.text_input("검색할 단어 또는 문장을 입력하세요:")
 
 if search_query:
