@@ -158,7 +158,10 @@ st.markdown("---")
 st.subheader("MongoDB 검색")
 
 search_query = st.text_input("검색어를 입력하세요:")
+
 if search_query:
+    regex = re.compile(search_query, re.IGNORECASE)
+
     query = {
         "감사결과": {
             "$elemMatch": {
@@ -173,12 +176,38 @@ if search_query:
     }
 
     results = list(collection.find(query))
-    if results:
-        st.success(f"총 {len(results)}건의 결과가 검색되었습니다.")
-        for idx, doc in enumerate(results, start=1):
+
+    # 🔹 문서 안에서 다시 항목별 필터링
+    total_matched = 0
+    display_blocks = []
+
+    for doc in results:
+        matched_items = []
+        for r in doc.get("감사결과", []):
+            text_fields = [
+                r.get("건명", ""),
+                r.get("처분", ""),
+                r.get("관련규정", ""),
+                r.get("지적사항", ""),
+            ]
+            if any(regex.search(str(t)) for t in text_fields):
+                matched_items.append(r)
+
+        if matched_items:
+            total_matched += len(matched_items)
+            display_blocks.append((doc, matched_items))
+
+    if total_matched > 0:
+        st.success(f"총 {total_matched}건의 결과가 검색되었습니다.")
+        for idx, (doc, items) in enumerate(display_blocks, start=1):
             st.markdown(f"### {idx}. {doc.get('피감기관')} ({doc.get('감사연도')})")
-            for r in doc.get("감사결과", []):
-                st.markdown(f"**건명:** {r.get('건명')}  \n**처분:** {r.get('처분')}  \n**관련규정:** {r.get('관련규정')}  \n**지적사항:** {r.get('지적사항')}")
+            for r in items:
+                st.markdown(
+                    f"**건명:** {r.get('건명')}  \n"
+                    f"**처분:** {r.get('처분')}  \n"
+                    f"**관련규정:** {r.get('관련규정')}  \n"
+                    f"**지적사항:** {r.get('지적사항')}"
+                )
                 st.markdown("---")
     else:
         st.info("검색 결과가 없습니다.")
