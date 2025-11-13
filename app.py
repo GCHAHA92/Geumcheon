@@ -143,7 +143,7 @@ with col2:
             with st.spinner("AI가 문서를 분석 중입니다..."):
                 try:
                     completion = client.beta.chat.completions.parse(
-    model="gpt-4o-mini",
+    model="gpt-4o",
     messages=[
         {
             "role": "system",
