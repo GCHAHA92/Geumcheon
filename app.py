@@ -224,7 +224,7 @@ with col2:
                 collection.insert_one(doc)
                 st.success("✅ MongoDB에 저장 완료!")
 
-# ----------- (3) 검색 -----------
+----------- (3) 검색 -----------
 st.markdown("---")
 st.subheader("MongoDB 검색")
 
@@ -270,7 +270,7 @@ if search_query:    # ← 여기 안에서만 total_matched를 만들어야 한�
     # -----------------------
     # 여기가 결과 출력 시작지점
     # -----------------------
- if total_matched > 0:
+    if total_matched > 0:
         st.success(f"총 {total_matched}건의 결과가 검색되었습니다.")
 
         for idx, (doc, items) in enumerate(display_blocks, start=1):
@@ -283,15 +283,15 @@ if search_query:    # ← 여기 안에서만 total_matched를 만들어야 한�
                 html = f"""
 <div class="result-container">
 
-<div class="result-title">
-[{title}] ({chobun})
-</div>
+  <div class="result-title">
+    [{title}] ({chobun})
+  </div>
 
-<div class="result-sub">관련규정</div>
-<div class="result-body">{r.get("관련규정","").replace("\n", "<br>")}</div>
+  <div class="result-sub">관련규정</div>
+  <div class="result-body">{r.get("관련규정","").replace("\n", "<br>")}</div>
 
-<div class="result-sub">지적사항</div>
-<div class="result-body">{r.get("지적사항","").replace("\n", "<br>")}</div>
+  <div class="result-sub">지적사항</div>
+  <div class="result-body">{r.get("지적사항","").replace("\n", "<br>")}</div>
 
 </div>
                 """
