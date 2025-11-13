@@ -110,33 +110,45 @@ with col2:
             with st.spinner("AI가 문서를 분석 중입니다..."):
                 try:
                     completion = client.beta.chat.completions.parse(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are an expert in audit report parsing. "
-                                    "You must convert unstructured text into structured JSON according to the schema."
-                                ),
-                            },
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"{cleaned_text}\n\n"
-                                    "다음 조건을 지켜 감사결과를 JSON으로 구조화하세요:\n"
-                                    "- '시정','주의','기타','회수(환수)','추급(환급)','징계','훈계(경징계/중징계)' 처분결과를 모두 포함합니다.\n"
-                                    "- 표, 연번, 목록형 데이터(1. 2. 3. …)는 제거합니다.\n"
-                                    "- 금액(예: 27,000원), 총 건수(예: 총 14건)는 유지합니다.\n"
-                                    "- 관련규정은 요약하지 말고 법령 원문 전체를 그대로 포함합니다.\n"
-                                    "- 조치할 사항은 반드시 포함합니다.\n"
-                                    "- JSON 형식은 다음과 같습니다:\n"
-                                    "{ '감사연도': str, '피감기관': str, '감사결과': [ {'건명': str, '처분': str, '관련규정': str, '지적사항': str} ] }"
-                                ),
-                            },
-                        ],
-                        response_format=ResearchPaperExtraction,
-                        temperature=0,
-                    )
+    model="gpt-4o-mini",
+    messages=[
+        {
+            "role": "system",
+            "content": (
+                "You are an expert in Korean audit report parsing. "
+                "You must convert unstructured text into structured JSON according to the schema."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"{cleaned_text}\n\n"
+                "다음 조건을 지켜 감사결과를 JSON으로 구조화하세요:\n"
+                "1) 상위 제목과 세부 제목을 구분하세요.\n"
+                "   - '○○ 분야', '건강관리 분야', '예산·회계 분야'처럼 '분야'로 끝나는 것은 **분야**입니다.\n"
+                "   - '15 ○○○○센터 비품관리대장 관리 소홀 [시정]'처럼 번호 + 제목 + [처분] 형태는\n"
+                "     번호를 제외한 부분을 **건명**으로 사용합니다.\n"
+                "2) JSON 필드는 다음과 같습니다.\n"
+                "   - '분야': '예산·회계', '건강관리', '보건위생' 등 상위 분야 이름(예: '건강관리 분야' → '건강관리').\n"
+                "   - '건명': 각 지적사항의 구체적인 제목\n"
+                "       예) '특별휴가 사용 관리 소홀', '○○센터 비품관리대장 관리 소홀' 등.\n"
+                "       '예산·회계 분야', '건강관리 분야'처럼 상위 제목은 건명에 절대 넣지 마세요.\n"
+                "   - '처분': '시정', '주의', '통보', '시정/주의/통보' 등.\n"
+                "   - '관련규정': 해당 지적사항 아래 '관련규정' 항목 전체 (요약 금지).\n"
+                "   - '지적사항': 해당 지적사항 아래 '지적사항' 및 '조치할 사항' 내용을 자연스럽게 연결한 문단.\n"
+                "3) JSON 전체 구조는 다음과 같습니다.\n"
+                "{ '감사연도': str,\n"
+                "  '피감기관': str,\n"
+                "  '감사결과': [\n"
+                "    { '분야': str, '건명': str, '처분': str, '관련규정': str, '지적사항': str }, ...\n"
+                "  ]\n"
+                "}\n"
+            ),
+        },
+    ],
+    response_format=ResearchPaperExtraction,
+    temperature=0,
+)
 
                     structured = completion.choices[0].message.parsed
                     st.session_state["structured_json"] = structured
