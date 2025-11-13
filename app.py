@@ -13,6 +13,35 @@ import re
 st.set_page_config(layout="wide", page_title="감사결과 PDF 파일 파싱 서비스")
 st.title("감사결과 PDF 자동 구조화 시스템")
 
+---------
+st.markdown("""
+<style>
+.result-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin-top: 25px;
+    padding-bottom: 4px;
+}
+.result-sub {
+    font-size: 15px;
+    font-weight: 600;
+    margin-top: 12px;
+    color: #555;
+}
+.result-body {
+    font-size: 14px;
+    line-height: 1.55;
+    margin-bottom: 12px;
+    color: #222;
+}
+.result-container {
+    padding: 4px 2px 18px 2px;
+    margin-bottom: 22px;
+}
+</style>
+""", unsafe_allow_html=True)
+--------
+
 # -----------------------------
 # 시크릿 로딩
 # -----------------------------
@@ -247,12 +276,26 @@ if search_query:
         for idx, (doc, items) in enumerate(display_blocks, start=1):
             st.markdown(f"### {idx}. {doc.get('피감기관')} ({doc.get('감사연도')})")
             for r in items:
-                st.markdown(
-                    f"**건명:** {r.get('건명')}  \n"
-                    f"**처분:** {r.get('처분')}  \n"
-                    f"**관련규정:** {r.get('관련규정')}  \n"
-                    f"**지적사항:** {r.get('지적사항')}"
-                )
-                st.markdown("---")
+    title = r.get("건명", "")
+    chobun = r.get("처분", "")
+
+    st.markdown(f"""
+    <div class="result-container">
+
+        <div class="result-title">
+            [{title}] ({chobun})
+        </div>
+
+        <div class="result-sub">관련규정</div>
+        <div class="result-body">{r.get("관련규정","").replace("\n", "<br>")}</div>
+
+        <div class="result-sub">지적사항</div>
+        <div class="result-body">{r.get("지적사항","").replace("\n", "<br>")}</div>
+
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
     else:
         st.info("검색 결과가 없습니다.")
