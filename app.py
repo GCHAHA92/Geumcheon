@@ -35,6 +35,7 @@ collection = db["Yangsan_Audit"]
 # Pydantic 모델
 # -----------------------------
 class AuditResult(BaseModel):
+    분야: str | None = None   # 새 필드
     건명: str
     처분: str
     관련규정: str
