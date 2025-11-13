@@ -206,7 +206,6 @@ with col2:
         },
     ],
     response_format=ResearchPaperExtraction,
-    temperature=0,
 )
 
                     structured = completion.choices[0].message.parsed
