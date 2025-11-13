@@ -64,20 +64,52 @@ def clean_text_for_ai(text: str) -> str:
     cleaned = []
 
     for line in lines:
-        # 표 구조나 구분선 제거
-        if re.search(r"[│┃┏┓┗┛━═\-]{3,}", line):  # 긴 구분선
-            continue
-        if re.search(r"^\s*\d{1,2}\s*[.|)]", line):  # 연번 (1. / 2) / 3)
-            continue
-        if "표 " in line or "표-" in line or "table" in line.lower():
-            continue
-        if len(line.strip()) == 0:
+        raw = line
+        line = line.rstrip("\n")
+
+        # 1) 완전한 구분선(테이블 테두리 등) 제거
+        #    ─, │, ┃, ┏, ┓, ┗, ┛, =, - 등으로만 이루어진 줄
+        if re.match(r"^[\s│┃┏┓┗┛━═\-_=]+$", line):
             continue
 
-        # 금액이나 총건수는 유지 (예: 27,000원 / 총 14건)
+        stripped = line.strip()
+
+        # 2) 완전히 비어 있는 줄은 건너뛰기
+        if not stripped:
+            continue
+
+        # 3) 페이지 번호 형식 제거 (예: "- 15 -", "15 / 32" 등)
+        if re.match(r"^[\-–—\s]*\d+\s*/\s*\d+[\-–—\s]*$", stripped):
+            continue
+        if re.match(r"^[\-–—\s]*\d+[\-–—\s]*$", stripped) and len(stripped) <= 8:
+            # 짧은 페이지 번호 형태(예: "- 15 -", "15")만 제거
+            continue
+
+        # 4) 표 캡션 제거 (예: "표 1", "표 2-1", "Table 1" 등)
+        if re.match(r"^표\s*\d+([\--–]\d+)?", stripped):
+            continue
+        if "table" in stripped.lower():
+            continue
+
+        # 5) 리스트 번호 같은 "1.", "2)", "3. 가)" 형태는 제거하되
+        #    실제 제목/건명 줄은 절대 삭제하지 않기
+        #
+        #   - 예) "1." / "2)" / "3. 가)" 처럼 숫자+기호만 있고 내용이 거의 없는 경우만 제거
+        #
+        if re.match(r"^\d{1,2}\s*[.)]\s*$", stripped):
+            # 내용 없는 순번만 있는 줄 (예: "1." / "2)")
+            continue
+        if re.match(r"^\d{1,2}\s*[.)]\s*[가-힣]\s*$", stripped):
+            # 예: "1. 가" "2) 나" 같은 순번+한 글자만 있는 줄
+            continue
+
+        # ⛔ 여기서부터는 "5. 건강관리 분야", "15 ○○센터 비품관리대장…" 같은
+        #    실제 제목/건명 줄은 그대로 유지됨
+
         cleaned.append(line)
 
     return "\n".join(cleaned)
+
 
 # -----------------------------
 # 세션 상태
