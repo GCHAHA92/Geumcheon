@@ -9,6 +9,8 @@ import re
 
 # -----------------------------
 # 기본 설정
+
+MODEL_GPT = "gpt-5-mini"
 # -----------------------------
 st.set_page_config(layout="wide", page_title="감사결과 PDF 파일 파싱 서비스")
 st.title("감사결과 PDF 자동 구조화 시스템")
@@ -169,7 +171,7 @@ with col2:
             with st.spinner("AI가 문서를 분석 중입니다..."):
                 try:
                     completion = client.beta.chat.completions.parse(
-    model="gpt-5-mini",
+    model="MODEL_GPT",
     messages=[
         {
             "role": "system",
