@@ -224,7 +224,7 @@ with col2:
                 collection.insert_one(doc)
                 st.success("✅ MongoDB에 저장 완료!")
 
------------ (3) 검색 -----------
+#---------- (3) 검색 -----------
 st.markdown("---")
 st.subheader("MongoDB 검색")
 
