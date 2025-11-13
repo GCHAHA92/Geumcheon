@@ -38,7 +38,6 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
---------
 
 # -----------------------------
 # 시크릿 로딩
